@@ -1,3 +1,12 @@
 ;; Real-world organization location / contact.
 ;; :head-role is institutional title only — no personal names.
-{:contact-page "https://www.wikidata.org/wiki/Q133810378", :ooyake-id "gov.usa.doc", :sourced-from "com-etzhayyim-ooyake gov-units (verbatim where present)", :head-role-note "institutional office title only; personal names of current office-holders are intentionally NOT stored", :official-url "https://ced.ky.gov/", :head-role "Secretary of Commerce", :hq {:line-en "Frankfort", :country "usa", :kind "headquarters", :provenance "https://www.wikidata.org/wiki/Q133810378", :last-verified "2026-06-03", :sourcing "authoritative"}, :wikidata "Q133810378", :name-en "Kentucky Cabinet for Economic Development"}
+{:ooyake-id "gov.usa.doc"
+  :official-url "https://ced.ky.gov/"
+  :name-en "Kentucky Cabinet for Economic Development"
+  :wikidata "Q133810378"
+  :head-role "Secretary of Commerce"
+  :head-role-note "institutional office title only; personal names of current office-holders are intentionally NOT stored"
+  :contact-page "https://www.wikidata.org/wiki/Q133810378"
+  :sourced-from "com-etzhayyim-ooyake gov-units (verbatim where present)"
+  :hq {:line-en "Frankfort" :country "usa" :kind "headquarters" :provenance "https://www.wikidata.org/wiki/Q133810378" :last-verified "2026-06-03" :sourcing "authoritative"}
+}
