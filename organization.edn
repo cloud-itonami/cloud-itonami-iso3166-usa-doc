@@ -1,12 +1,12 @@
 ;; Real-world organization location / contact.
 ;; :head-role is institutional title only — no personal names.
 {:ooyake-id "gov.usa.doc"
-  :official-url "https://ced.ky.gov/"
-  :name-en "Kentucky Cabinet for Economic Development"
-  :wikidata "Q133810378"
+  :official-url "https://www.commerce.gov/"
+  :name-en "United States Department of Commerce"
+  :wikidata "Q503577"
   :head-role "Secretary of Commerce"
   :head-role-note "institutional office title only; personal names of current office-holders are intentionally NOT stored"
-  :contact-page "https://www.wikidata.org/wiki/Q133810378"
-  :sourced-from "com-etzhayyim-ooyake gov-units (verbatim where present)"
-  :hq {:line-en "Frankfort" :country "usa" :kind "headquarters" :provenance "https://www.wikidata.org/wiki/Q133810378" :last-verified "2026-06-03" :sourcing "authoritative"}
+  :contact-page "https://www.commerce.gov/about/contact-us"
+  :sourced-from "official public contact page"
+  :hq {:line-en "1401 Constitution Avenue NW, Washington, DC 20230" :line-local "1401 Constitution Avenue NW, Washington, DC 20230" :postal-code "20230" :phone "1-202-482-2000" :kind "headquarters" :provenance "https://www.commerce.gov/about/contact-us" :last-verified "2026-07-19" :sourcing "official-site-public" :country "usa"}
 }
