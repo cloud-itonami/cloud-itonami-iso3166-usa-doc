@@ -1,0 +1,953 @@
+(ns statute.facts
+  "Agency-level compliance catalog for **USA-DOC** (United States Department
+  of Commerce / Bureau of Industry and Security) -- the spec-basis behind this
+  leaf's blueprint claim that an independent operator can run a
+  `Commerce/BIS Export-Control Compliance Service`.
+
+  Scope. This is the Commerce-specific layer only. Government-wide U.S. federal
+  statutes live in the country coordinator `cloud-itonami-iso3166-usa`'s
+  `statute.facts` and are NOT duplicated here; the two catalogs compose, keyed
+  `USA-DOC` -> `USA`. Sibling agency leaves (`USA-TREASURY`, `USA-DOT`,
+  `USA-FCC`, `USA-SEC`) hold their own chapters. Two government-wide bodies of
+  rule ARE carried here anyway -- the ITAR (22 CFR chapter I subchapter M) and
+  the FAR (48 CFR chapter 1) -- because every finding below is a statement
+  about how Commerce/BIS relates to them, and a contrast needs both sides
+  present to be checked.
+
+  Provenance. Every entry cites the official eCFR (Electronic Code of Federal
+  Regulations, GPO/Office of the Federal Register) address for the smallest
+  stable unit that was independently confirmed. Nothing here is fabricated:
+  each `:statute/verified-label` is the byte-exact `label_description` returned
+  by the eCFR versioner structure API on `:statute/verified-at`, and each
+  string in `:statute/verified-quotes` is a byte-exact span of the section text
+  returned by the eCFR versioner full-text API. `tools/verify_citations.cljs`
+  re-fetches both and fails if either drifts.
+
+  Why the citation and the verification URL differ. `:statute/url` is the
+  canonical human address a person should open. It is deliberately NOT the URL
+  that was machine-verified: fetching www.ecfr.gov from an automated client can
+  return HTTP 200 with a `Federal Register :: Request Access` interstitial
+  rather than the regulation, so a status-code check against it would report
+  success while proving nothing. We verify through the documented machine API
+  and record both. The human URLs here were constructed from the same verified
+  node paths rather than fetched -- do not `curl` one and treat a 200 as
+  confirmation, because it is not.
+
+  THE TRAP THIS CATALOG EXISTS TO PIN DOWN. **The EAR (15 CFR chapter VII
+  subchapter C, BIS / Commerce) is not the ITAR (22 CFR subchapter M, DDTC /
+  State), and it is not federal acquisition (48 CFR FAR).** This leaf's own
+  blueprint describes the product as a Commerce/BIS export-control compliance
+  service. Two independent confusions that sentence invites are refuted by the
+  regulations below, and both refutations are recorded as data -- a quoted span
+  or a checked negative -- rather than as prose:
+
+  1. **Export administration is not arms-traffic control.** 15 CFR 730.1 says
+     the EAR are issued by Commerce BIS. The United States Munitions List and
+     `defense article` vocabulary live in 22 CFR part 121 under State. Scanning
+     15 CFR chapter VII for `munitions list`, `defense article`, or
+     `international traffic in arms` returns nothing that would let an operator
+     treat an EAR classification as an ITAR licence. The regimes share the word
+     `export` and almost nothing else.
+
+  2. **Export control is not federal procurement.** 48 CFR chapter 1 is the
+     FAR. EAR subchapter C does not carry acquisition parts, and part 730 does
+     not speak in SAM.gov / unique-entity-identifier language. An operator who
+     folds BIS screening into a FAR onboarding checklist has mixed two titles
+     that the CFR keeps apart.
+
+  What is genuinely Commerce/BIS-only. Three things a client cannot get from a
+  generic federal-compliance adviser: (a) knowing which Commerce hat an
+  obligation comes from -- BIS export control versus Census, NIST, or ITA --
+  because title 15 carries all of them; (b) the CCL / country-chart steps that
+  decide whether a licence is required under the EAR before anyone reaches
+  State; and (c) the recordkeeping and enforcement duties in parts 762 and 764
+  that bind parties who are neither FAR contractors nor ITAR registrants."
+  (:require [clojure.string :as str]))
+
+;; ---------------------------------------------------------------------------
+;; Verification endpoints.
+;;
+;; Pinned to a dated snapshot rather than `current` so that a run is
+;; reproducible: `current` would silently change the thing being compared
+;; against, which is the failure mode where a gate keeps passing because both
+;; sides moved together.
+;;
+;; Three titles, which is itself the finding. EAR, ITAR, and FAR do not share
+;; a book.
+
+(def ecfr-structure-api
+  "CFR title -> eCFR versioner *structure* endpoint. Yields the node tree whose
+  `label_description` fields the positive half of the gate compares against."
+  {15 "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+   22 "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+   48 "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-48.json"})
+
+(def ecfr-full-text-api
+  "CFR title -> eCFR versioner *full-text* endpoint. A quote check appends
+  `?part=<part>&section=<section>`; a text-absence check appends `?part=<part>`
+  alone. Declared per title rather than built from a prefix so that an entry
+  citing a title nobody declared an endpoint for is a could-not-answer instead
+  of a fetch against a URL nobody checked. Title 22 is deliberately absent
+  from the full-text map: the ITAR entries below are heading-only contrast
+  anchors, and an endpoint declared for a title no quote uses would be dead
+  configuration that looks like coverage. Title 48 is likewise heading-only
+  here."
+  {15 "https://www.ecfr.gov/api/versioner/v1/full/2026-08-18/title-15.xml"})
+
+;; ---------------------------------------------------------------------------
+;; The catalog.
+;;
+;; `USA-DOC` is an agency-level key (parent `USA`), matching
+;; blueprint.edn's `:itonami.blueprint/iso3166`.
+;;
+;; `:statute/cfr-node` is the path from the CFR title down to the cited node,
+;; as [type identifier] pairs. The live gate walks the eCFR structure tree by
+;; this path -- it does not string-match the URL, because hierarchical
+;; identifiers nest as substrings of one another (part `73` is a prefix of
+;; part `730`, section `730.1` of nothing here but part `12` of part `120`).
+;; Walking explicit [type identifier] steps cannot pass by accident.
+;;
+;; `:statute/hat` says which role the entry belongs to. Conflating these is the
+;; failure this catalog exists to prevent, so it is a required field:
+;;   :border-regulator  -- BIS writing the EAR (15 CFR ch VII subch C)
+;;   :sibling-bureau    -- other Commerce bureaus in title 15 (Census/NIST/ITA)
+;;   :itar-contrast     -- State/DDTC ITAR in title 22, present for contrast
+;;   :far-baseline      -- 48 CFR chapter 1: federal acquisition, not EAR
+
+(def catalog
+  "USA-DOC -> ordered vector of verified regulatory anchors."
+  {"USA-DOC"
+   [
+    {:statute/id            :bis/chapter
+     :statute/topic         #{:export-control :agency}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Chapter VII -- Bureau of Industry and Security, Department of Commerce"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII"
+     :statute/verified-label "Bureau of Industry and Security, Department of Commerce"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "The Commerce bureau that writes the EAR. This chapter is the home of
+            export-control rules that are NOT the ITAR and NOT federal acquisition.
+            An operator who equates `export control` with `State Department munitions
+            licensing` has opened the wrong title."}
+
+    {:statute/id            :ear/subchapter
+     :statute/topic         #{:export-control :scope}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Chapter VII Subchapter C -- Export Administration Regulations"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C"
+     :statute/verified-label "Export Administration Regulations"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "The EAR themselves. Subchapter C under BIS is the regulatory body this
+            leaf's blueprint sells navigation of. It is 15 CFR, not 22 CFR."}
+
+    {:statute/id            :ear/part-730
+     :statute/topic         #{:export-control :scope}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 730 -- General Information"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "730"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-730"
+     :statute/verified-label "General Information"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 730. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-732
+     :statute/topic         #{:export-control :procedure}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 732 -- Steps for Using the EAR"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "732"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-732"
+     :statute/verified-label "Steps for Using the EAR"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 732. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-734
+     :statute/topic         #{:export-control :scope}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 734 -- Scope of the Export Administration Regulations"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "734"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-734"
+     :statute/verified-label "Scope of the Export Administration Regulations"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 734. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-736
+     :statute/topic         #{:export-control :prohibition}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 736 -- General Prohibitions"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "736"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-736"
+     :statute/verified-label "General Prohibitions"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 736. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-738
+     :statute/topic         #{:export-control :ccl}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 738 -- Commerce Control List Overview and the Country Chart"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "738"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-738"
+     :statute/verified-label "Commerce Control List Overview and the Country Chart"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 738. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-740
+     :statute/topic         #{:export-control :license}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 740 -- License Exceptions"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "740"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-740"
+     :statute/verified-label "License Exceptions"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 740. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-742
+     :statute/topic         #{:export-control :policy}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 742 -- Control Policy—CCL Based Controls"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "742"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-742"
+     :statute/verified-label "Control Policy—CCL Based Controls"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 742. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-744
+     :statute/topic         #{:export-control :end-use}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 744 -- Control Policy: End-User and End-Use Based"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "744"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-744"
+     :statute/verified-label "Control Policy: End-User and End-Use Based"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 744. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-746
+     :statute/topic         #{:export-control :embargo}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 746 -- Embargoes and Other Special Controls"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "746"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-746"
+     :statute/verified-label "Embargoes and Other Special Controls"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 746. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-748
+     :statute/topic         #{:export-control :license}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 748 -- Applications (Classification, Advisory, and License) and Documentation"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "748"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-748"
+     :statute/verified-label "Applications (Classification, Advisory, and License) and Documentation"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 748. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-750
+     :statute/topic         #{:export-control :license}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 750 -- Application Processing, Issuance, and Denial"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "750"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-750"
+     :statute/verified-label "Application Processing, Issuance, and Denial"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 750. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-758
+     :statute/topic         #{:export-control :clearance}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 758 -- Export Clearance Requirements and Authorities"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "758"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-758"
+     :statute/verified-label "Export Clearance Requirements and Authorities"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 758. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-760
+     :statute/topic         #{:export-control :antiboycott}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 760 -- Restrictive Trade Practices or Boycotts"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "760"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-760"
+     :statute/verified-label "Restrictive Trade Practices or Boycotts"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 760. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-762
+     :statute/topic         #{:export-control :records}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 762 -- Recordkeeping"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "762"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-762"
+     :statute/verified-label "Recordkeeping"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 762. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-764
+     :statute/topic         #{:export-control :enforcement}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 764 -- Enforcement and Protective Measures"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "764"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-764"
+     :statute/verified-label "Enforcement and Protective Measures"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 764. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-766
+     :statute/topic         #{:export-control :enforcement}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 766 -- Administrative Enforcement Proceedings"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "766"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-766"
+     :statute/verified-label "Administrative Enforcement Proceedings"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 766. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-772
+     :statute/topic         #{:export-control :definitions}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 772 -- Definitions of Terms"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "772"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-772"
+     :statute/verified-label "Definitions of Terms"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 772. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/part-774
+     :statute/topic         #{:export-control :ccl}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR Part 774 -- The Commerce Control List"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "774"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-774"
+     :statute/verified-label "The Commerce Control List"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "EAR part 774. Heading-only anchor so the live gate can confirm the
+            part still sits under chapter VII subchapter C -- the BIS tree, not the
+            State Department's ITAR tree and not the FAR."}
+
+    {:statute/id            :ear/section-730-1
+     :statute/topic         #{:export-control :scope}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR 730.1 -- What these regulations cover"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "730"] ["section" "730.1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-730/section-730.1"
+     :statute/verified-label "What these regulations cover."
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/quote-part    "730"
+     :statute/quote-section "730.1"
+     :statute/verified-quotes
+     [      "The EAR are issued by the United States Department of Commerce, Bureau of Industry and Security (BIS)"
+      "In this part, references to the Export Administration Regulations (EAR) are references to 15 CFR chapter VII, subchapter C"
+     ]
+     :statute/note
+     "Load-bearing EAR text. The recorded quotes are the operative claims
+            this leaf's notes rest on; if any span disappears from the live section,
+            the advice attached to this entry is no longer grounded."}
+
+    {:statute/id            :ear/section-734-2
+     :statute/topic         #{:export-control :scope}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR 734.2 -- Subject to the EAR"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "734"] ["section" "734.2"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-734/section-734.2"
+     :statute/verified-label "Subject to the EAR."
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/quote-part    "734"
+     :statute/quote-section "734.2"
+     :statute/verified-quotes
+     [      "“Subject to the EAR” is a term used in the EAR to describe those items and activities over which BIS exercises regulatory jurisdiction under the EAR"
+      "items and activities that are not subject to the EAR are outside the regulatory jurisdiction of the EAR"
+     ]
+     :statute/note
+     "Load-bearing EAR text. The recorded quotes are the operative claims
+            this leaf's notes rest on; if any span disappears from the live section,
+            the advice attached to this entry is no longer grounded."}
+
+    {:statute/id            :ear/section-736-1
+     :statute/topic         #{:export-control :prohibition}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR 736.1 -- Introduction"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "736"] ["section" "736.1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-736/section-736.1"
+     :statute/verified-label "Introduction."
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/quote-part    "736"
+     :statute/quote-section "736.1"
+     :statute/verified-quotes
+     [      "A person may undertake transactions subject to the EAR without a license or other authorization, unless the regulations affirmatively state such a requirement"
+      "if an export, reexport, or activity is subject to the EAR, the general prohibitions contained in this part and the License Exceptions specified in part 740 of the EAR must be reviewed to determine if a license is necessary"
+     ]
+     :statute/note
+     "Load-bearing EAR text. The recorded quotes are the operative claims
+            this leaf's notes rest on; if any span disappears from the live section,
+            the advice attached to this entry is no longer grounded."}
+
+    {:statute/id            :ear/section-738-1
+     :statute/topic         #{:export-control :ccl}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR 738.1 -- Introduction"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "738"] ["section" "738.1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-738/section-738.1"
+     :statute/verified-label "Introduction."
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/quote-part    "738"
+     :statute/quote-section "738.1"
+     :statute/verified-quotes
+     [      "The CCL does not include those items exclusively controlled for export or reexport by another department or agency of the U.S. Government"
+      "The Bureau of Industry and Security (BIS) maintains the Commerce Control List (CCL) within the Export Administration Regulations (EAR)"
+     ]
+     :statute/note
+     "Load-bearing EAR text. The recorded quotes are the operative claims
+            this leaf's notes rest on; if any span disappears from the live section,
+            the advice attached to this entry is no longer grounded."}
+
+    {:statute/id            :ear/section-744-1
+     :statute/topic         #{:export-control :end-use}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR 744.1 -- General provisions"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "744"] ["section" "744.1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-744/section-744.1"
+     :statute/verified-label "General provisions."
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/quote-part    "744"
+     :statute/quote-section "744.1"
+     :statute/verified-quotes
+     [      "This part contains prohibitions against exports, reexports, and selected transfers to certain end users and end uses"
+      "Sections 744.2, 744.3, and 744.4 prohibit exports, reexports, and transfers (in-country) of items subject to the EAR to defined nuclear, missile, and chemical and biological weapons proliferation activities"
+     ]
+     :statute/note
+     "Load-bearing EAR text. The recorded quotes are the operative claims
+            this leaf's notes rest on; if any span disappears from the live section,
+            the advice attached to this entry is no longer grounded."}
+
+    {:statute/id            :ear/section-748-1
+     :statute/topic         #{:export-control :license}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR 748.1 -- General provisions"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "748"] ["section" "748.1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-748/section-748.1"
+     :statute/verified-label "General provisions."
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/quote-part    "748"
+     :statute/quote-section "748.1"
+     :statute/verified-quotes
+     [      "The provisions of this part involve requests for classifications and advisory opinions, export license applications, reexport license applications"
+      "All terms, conditions, provisions, and instructions, including the applicant and consignee certifications, contained in electronic or paper form(s) are incorporated as part of the EAR"
+     ]
+     :statute/note
+     "Load-bearing EAR text. The recorded quotes are the operative claims
+            this leaf's notes rest on; if any span disappears from the live section,
+            the advice attached to this entry is no longer grounded."}
+
+    {:statute/id            :ear/section-762-1
+     :statute/topic         #{:export-control :records}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR 762.1 -- Scope"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "762"] ["section" "762.1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-762/section-762.1"
+     :statute/verified-label "Scope."
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/quote-part    "762"
+     :statute/quote-section "762.1"
+     :statute/verified-quotes
+     [      "The recordkeeping provisions of this part apply to the following transactions"
+      "Exports of commodities, software, or technology from the United States and any known reexports, transfers (in-country), transshipment, or diversions of items exported from the United States"
+     ]
+     :statute/note
+     "Load-bearing EAR text. The recorded quotes are the operative claims
+            this leaf's notes rest on; if any span disappears from the live section,
+            the advice attached to this entry is no longer grounded."}
+
+    {:statute/id            :ear/section-764-1
+     :statute/topic         #{:export-control :enforcement}
+     :statute/hat           :border-regulator
+     :statute/title         "15 CFR 764.1 -- Introduction"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "764"] ["section" "764.1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-764/section-764.1"
+     :statute/verified-label "Introduction."
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/quote-part    "764"
+     :statute/quote-section "764.1"
+     :statute/verified-quotes
+     [      "This part specifies conduct that constitutes a violation of the ECRA and/or the EAR and the sanctions that may be imposed"
+      "This part describes administrative sanctions that may be imposed by BIS"
+     ]
+     :statute/note
+     "Load-bearing EAR text. The recorded quotes are the operative claims
+            this leaf's notes rest on; if any span disappears from the live section,
+            the advice attached to this entry is no longer grounded."}
+
+    {:statute/id            :census/chapter
+     :statute/topic         #{:commerce :sibling}
+     :statute/hat           :sibling-bureau
+     :statute/title         "15 CFR Chapter I -- Bureau of the Census, Department of Commerce"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "I"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-I"
+     :statute/verified-label "Bureau of the Census, Department of Commerce"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "Sibling Commerce bureau. Present so the catalog cannot be misread as
+            `everything in title 15 is BIS`. Census rules are Commerce, and they are
+            not export administration."}
+
+    {:statute/id            :nist/chapter
+     :statute/topic         #{:commerce :sibling}
+     :statute/hat           :sibling-bureau
+     :statute/title         "15 CFR Chapter II -- National Institute of Standards and Technology, Department of Commerce"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "II"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-II"
+     :statute/verified-label "National Institute of Standards and Technology, Department of Commerce"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "Sibling Commerce bureau (NIST). Standards metrology is not EAR licensing,
+            and an operator selling export-control navigation must not treat NIST
+            chapters as BIS authority."}
+
+    {:statute/id            :ita/chapter
+     :statute/topic         #{:commerce :sibling}
+     :statute/hat           :sibling-bureau
+     :statute/title         "15 CFR Chapter III -- International Trade Administration, Department of Commerce"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "III"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-III"
+     :statute/verified-label "International Trade Administration, Department of Commerce"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "Sibling Commerce bureau (ITA). Trade promotion and remedies live here;
+            the EAR do not. Same department, different hat."}
+
+    {:statute/id            :itar/subchapter
+     :statute/topic         #{:export-control :itar}
+     :statute/hat           :itar-contrast
+     :statute/title         "22 CFR Chapter I Subchapter M -- International Traffic in Arms Regulations"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M"
+     :statute/verified-label "International Traffic in Arms Regulations"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "THE CONTRAST SIDE of this catalog's central trap. The ITAR are State /
+            DDTC rules in title 22. They are not the EAR, and they are not filed under
+            Commerce. Recording them here is what makes the EAR/ITAR distinction
+            checkable rather than asserted."}
+
+    {:statute/id            :itar/part-120
+     :statute/topic         #{:export-control :itar}
+     :statute/hat           :itar-contrast
+     :statute/title         "22 CFR Part 120 -- Purpose and Definitions"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"] ["part" "120"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M/part-120"
+     :statute/verified-label "Purpose and Definitions"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "ITAR part 120. Contrast anchor: munitions / defense-article
+            vocabulary lives here, under State, not under 15 CFR chapter VII."}
+
+    {:statute/id            :itar/part-121
+     :statute/topic         #{:export-control :itar}
+     :statute/hat           :itar-contrast
+     :statute/title         "22 CFR Part 121 -- The United States Munitions List"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"] ["part" "121"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M/part-121"
+     :statute/verified-label "The United States Munitions List"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "ITAR part 121. Contrast anchor: munitions / defense-article
+            vocabulary lives here, under State, not under 15 CFR chapter VII."}
+
+    {:statute/id            :itar/part-122
+     :statute/topic         #{:export-control :itar}
+     :statute/hat           :itar-contrast
+     :statute/title         "22 CFR Part 122 -- Registration of Manufacturers and Exporters"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"] ["part" "122"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M/part-122"
+     :statute/verified-label "Registration of Manufacturers and Exporters"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "ITAR part 122. Contrast anchor: munitions / defense-article
+            vocabulary lives here, under State, not under 15 CFR chapter VII."}
+
+    {:statute/id            :itar/part-123
+     :statute/topic         #{:export-control :itar}
+     :statute/hat           :itar-contrast
+     :statute/title         "22 CFR Part 123 -- Licenses for the Export and Temporary Import of Defense Articles"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"] ["part" "123"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M/part-123"
+     :statute/verified-label "Licenses for the Export and Temporary Import of Defense Articles"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "ITAR part 123. Contrast anchor: munitions / defense-article
+            vocabulary lives here, under State, not under 15 CFR chapter VII."}
+
+    {:statute/id            :itar/part-126
+     :statute/topic         #{:export-control :itar}
+     :statute/hat           :itar-contrast
+     :statute/title         "22 CFR Part 126 -- General Policies and Provisions"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"] ["part" "126"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M/part-126"
+     :statute/verified-label "General Policies and Provisions"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "ITAR part 126. Contrast anchor: munitions / defense-article
+            vocabulary lives here, under State, not under 15 CFR chapter VII."}
+
+    {:statute/id            :itar/part-127
+     :statute/topic         #{:export-control :itar}
+     :statute/hat           :itar-contrast
+     :statute/title         "22 CFR Part 127 -- Violations and Penalties"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"] ["part" "127"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M/part-127"
+     :statute/verified-label "Violations and Penalties"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "ITAR part 127. Contrast anchor: munitions / defense-article
+            vocabulary lives here, under State, not under 15 CFR chapter VII."}
+
+    {:statute/id            :far/root
+     :statute/topic         #{:procurement}
+     :statute/hat           :far-baseline
+     :statute/title         "48 CFR Chapter 1 -- Federal Acquisition Regulation"
+     :statute/cfr-title     48
+     :statute/cfr-node      [["chapter" "1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-48/chapter-1"
+     :statute/verified-label "Federal Acquisition Regulation"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-48.json"
+     :statute/verified-at   "2026-08-20"
+     :statute/status        :operative
+     :statute/note
+     "What governs selling to a federal agency. Export-control classification
+            under the EAR is not federal acquisition, and the FAR does not become the
+            EAR by being cited next to it. Present so the catalog can prove the
+            absence of acquisition vocabulary inside EAR subchapter C against a real
+            FAR heading."}
+    ]})
+
+;; ---------------------------------------------------------------------------
+
+(def absences
+  "Things a competent reader expects to find for this department, which are not
+  there -- each recorded so the live gate can confirm they are STILL not there.
+
+  Two of these are TEXT absences rather than label absences: the claim is about
+  words inside a regulation's running text, not about a heading. Those carry a
+  `:absence/control-text` pattern that MUST match in the very same fetched
+  document, because a text absence is the easiest kind of check to pass for
+  free -- fetch nothing, match nothing, report confirmed."
+  [{:absence/id :doc/no-usml-label-in-bis-chapter
+    :absence/claim
+    "No node label under 15 CFR chapter VII -- the BIS chapter that holds the
+     EAR -- is the United States Munitions List. That list is 22 CFR part 121
+     under State/DDTC. Cross-references that merely *mention* the ITAR in a
+     Chemical Weapons Convention heading are not the USML itself; the claim
+     recorded here is the stronger one that the munitions list is not a
+     Commerce node. An operator searching the Commerce title for the USML must
+     not treat an EAR hit as ITAR registration."
+    :absence/absent-label
+    {:statute/cfr-title 15
+     :statute/under     [["subtitle" "B"] ["chapter" "VII"]]
+     :statute/pattern   "(?i)united states munitions list"}
+    :absence/control-label
+    {:statute/pattern "(?i)Export Administration"
+     :absence/control-note
+     "Chapter VII subchapter C is labelled Export Administration Regulations.
+      If this control stops matching, the scan is not reading the BIS chapter
+      and the absence is vacuous."}
+    :absence/see-instead
+    {:statute/id            :itar/usml-see-instead
+     :statute/title         "22 CFR Part 121 -- The United States Munitions List"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"] ["part" "121"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M/part-121"
+     :statute/verified-label "The United States Munitions List"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"}}
+
+   {:absence/id :doc/no-far-acquisition-in-ear-subchapter
+    :absence/claim
+    "No node label under 15 CFR chapter VII subchapter C -- the EAR -- matches
+     `Federal Acquisition` or a bare `acquisition` token. The EAR regulate
+     exports, reexports, and certain activities; they are not a procurement
+     supplement. Federal acquisition lives in 48 CFR chapter 1. An operator
+     who treats BIS classification as a FAR onboarding step has opened the
+     wrong book for the wrong question."
+    :absence/absent-label
+    {:statute/cfr-title 15
+     :statute/under     [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"]]
+     :statute/pattern   "(?i)Federal Acquisition|\\bacquisition\\b"}
+    :absence/control-label
+    {:statute/pattern "(?i)Export Administration"
+     :absence/control-note
+     "Subchapter C itself is Export Administration Regulations. If this
+      control stops matching, the walk reached the wrong subtree."}
+    :absence/see-instead
+    {:statute/id            :far/root-see-instead
+     :statute/title         "48 CFR Chapter 1 -- Federal Acquisition Regulation"
+     :statute/cfr-title     48
+     :statute/cfr-node      [["chapter" "1"]]
+     :statute/url           "https://www.ecfr.gov/current/title-48/chapter-1"
+     :statute/verified-label "Federal Acquisition Regulation"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-48.json"
+     :statute/verified-at   "2026-08-20"}}
+
+   {:absence/id :doc/no-itar-phrase-in-ear-730-1
+    :absence/claim
+    "The phrase `international traffic in arms` does not appear in the text of
+     15 CFR 730.1 -- the section that says what the EAR cover and who issues
+     them. That section names Commerce BIS and the EAR; it does not name the
+     ITAR. Recorded as a text absence so a future edit that folded State
+     vocabulary into the EAR's opening section would trip the gate rather than
+     silently rewrite this leaf's central distinction."
+    :absence/absent-text
+    {:statute/cfr-title 15
+     :statute/part      "730"
+     :statute/section   "730.1"
+     :statute/pattern   "(?i)international traffic in arms"}
+    :absence/control-text
+    {:statute/pattern "(?i)Bureau of Industry and Security"
+     :absence/control-note
+     "730.1's own issuer sentence. If this stops matching, the fetch returned
+      something that is not section 730.1 -- or nothing at all -- and the
+      absence above proves nothing."}
+    :absence/see-instead
+    {:statute/id            :itar/subchapter-see-instead
+     :statute/title         "22 CFR Chapter I Subchapter M -- International Traffic in Arms Regulations"
+     :statute/cfr-title     22
+     :statute/cfr-node      [["chapter" "I"] ["subchapter" "M"]]
+     :statute/url           "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M"
+     :statute/verified-label "International Traffic in Arms Regulations"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-22.json"
+     :statute/verified-at   "2026-08-20"}}
+
+   {:absence/id :doc/no-sam-uei-in-ear-part-730
+    :absence/claim
+    "The strings `SAM.gov` and `unique entity identifier` do not appear in the
+     text of 15 CFR part 730 -- General Information for the EAR. Part 730
+     introduces Commerce BIS export controls; it does not introduce federal
+     award registration. An operator who starts an EAR screening engagement by
+     collecting a UEI has imported an assistance/procurement identifier into a
+     regime that does not ask for one here."
+    :absence/absent-text
+    {:statute/cfr-title 15
+     :statute/part      "730"
+     :statute/pattern   "(?i)SAM\\.gov|unique entity identifier"}
+    :absence/control-text
+    {:statute/pattern "(?i)Export Administration Regulations"
+     :absence/control-note
+     "Part 730's own subject phrase. If this stops matching, the fetch failed
+      or returned the wrong part, and the absence is vacuous."}
+    :absence/see-instead
+    {:statute/id            :ear/part-730-see-instead
+     :statute/title         "15 CFR Part 730 -- General Information"
+     :statute/cfr-title     15
+     :statute/cfr-node      [["subtitle" "B"] ["chapter" "VII"] ["subchapter" "C"] ["part" "730"]]
+     :statute/url           "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-730"
+     :statute/verified-label "General Information"
+     :statute/verified-via  "https://www.ecfr.gov/api/versioner/v1/structure/2026-08-18/title-15.json"
+     :statute/verified-at   "2026-08-20"}}])
+
+;; ---------------------------------------------------------------------------
+;; Accessors.
+
+(defn entries
+  "Every catalog entry, flattened across ISO keys."
+  []
+  (vec (mapcat val catalog)))
+
+(defn by-hat
+  "Entries wearing `hat` -- the question `which Commerce role am I dealing with`."
+  [hat]
+  (filterv #(= hat (:statute/hat %)) (entries)))
+
+(defn by-topic
+  "Entries tagged with `topic`."
+  [topic]
+  (filterv #(contains? (:statute/topic %) topic) (entries)))
+
+(defn titles-covered
+  "Sorted CFR titles this catalog cites. Three -- EAR, ITAR, FAR -- which is
+  the finding."
+  []
+  (vec (sort (distinct (map :statute/cfr-title (entries))))))
+
+(defn quoted-entries
+  "Entries carrying at least one byte-exact span of live regulation text."
+  []
+  (filterv #(seq (:statute/verified-quotes %)) (entries)))
+
+(defn quote-count
+  "Total spans the live gate must find. Shrinking this without noticing is the
+  failure mode the offline suite exists to prevent."
+  []
+  (reduce + 0 (map #(count (:statute/verified-quotes %)) (entries))))
+
+(defn summary
+  "One line per entry -- for humans reading the catalog at a terminal."
+  []
+  (str/join "\n"
+            (for [e (entries)]
+              (str (name (:statute/hat e)) "\t" (:statute/title e)))))
