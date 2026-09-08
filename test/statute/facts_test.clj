@@ -18,7 +18,7 @@
       from it shrinks the gate without tripping any floor;
     * the catalog does not fall below the floors the gate enforces."
   (:require [clojure.test :refer [deftest is testing]]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [statute.facts :as f]))
 
 (def all (f/entries))
