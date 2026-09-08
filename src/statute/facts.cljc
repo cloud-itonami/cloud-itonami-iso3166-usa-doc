@@ -62,7 +62,7 @@
   decide whether a licence is required under the EAR before anyone reaches
   State; and (c) the recordkeeping and enforcement duties in parts 762 and 764
   that bind parties who are neither FAR contractors nor ITAR registrants."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 ;; ---------------------------------------------------------------------------
 ;; Verification endpoints.
